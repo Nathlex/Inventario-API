@@ -1,0 +1,76 @@
+SET NOCOUNT ON;
+
+-- 1. Validar que los roles 2 y 3 existan y estén activos
+IF (SELECT COUNT(*) FROM dbo.Rol WHERE rolID IN (2, 3) AND isActive = 1) < 2
+BEGIN
+    RAISERROR('Abortado: Los roles 2 (COORDINADOR) y 3 (CONSULTOR) deben existir y tener isActive = 1 en dbo.Rol.', 16, 1);
+    RETURN;
+END
+
+-- 2. Validar que las 5 vistas existan en producción antes de limpiar permisos
+IF (
+    SELECT COUNT(DISTINCT name)
+    FROM dbo.dashboard_paths
+    WHERE name IN ('Dashboard', 'Inventario', 'Movimientos', 'Reportes', 'Historial')
+) < 5
+BEGIN
+    RAISERROR('Abortado: Falta alguna de las vistas (Dashboard, Inventario, Movimientos, Reportes, Historial) en dbo.dashboard_paths.', 16, 1);
+    RETURN;
+END
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    -- 3. Limpiar asignaciones previas de Coordinador (2) y Consultor (3)
+    DELETE FROM dbo.rol_dashboard_path
+    WHERE rolID IN (2, 3);
+
+    -- 4. Insertar vistas de Coordinador (rolID = 2) en orden exacto
+    INSERT INTO dbo.rol_dashboard_path (rolID, dashboarpathID)
+    SELECT 2, dp.dashboarpathID
+    FROM dbo.dashboard_paths dp
+    WHERE dp.name IN ('Dashboard', 'Inventario', 'Movimientos', 'Reportes', 'Historial')
+    ORDER BY CASE dp.name
+        WHEN 'Dashboard'   THEN 1
+        WHEN 'Inventario'  THEN 2
+        WHEN 'Movimientos' THEN 3
+        WHEN 'Reportes'    THEN 4
+        WHEN 'Historial'   THEN 5
+    END ASC;
+
+    -- 5. Insertar vistas de Consultor (rolID = 3) en orden exacto
+    INSERT INTO dbo.rol_dashboard_path (rolID, dashboarpathID)
+    SELECT 3, dp.dashboarpathID
+    FROM dbo.dashboard_paths dp
+    WHERE dp.name IN ('Dashboard', 'Inventario', 'Historial')
+    ORDER BY CASE dp.name
+        WHEN 'Dashboard'  THEN 1
+        WHEN 'Inventario' THEN 2
+        WHEN 'Historial'  THEN 3
+    END ASC;
+
+    COMMIT TRANSACTION;
+    PRINT 'Permisos de producción aplicados correctamente.';
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    RAISERROR('Error al aplicar permisos en producción: %s', 16, 1, @ErrorMessage);
+END CATCH;
+
+-- 6. Verificación final de permisos por rol
+SELECT 
+    r.rolID,
+    r.name AS Rol,
+    rdp.roldashboardpathID,
+    dp.dashboarpathID,
+    dp.name AS Vista,
+    dp.path AS Ruta
+FROM dbo.rol_dashboard_path rdp
+INNER JOIN dbo.Rol r
+    ON rdp.rolID = r.rolID
+INNER JOIN dbo.dashboard_paths dp
+    ON rdp.dashboarpathID = dp.dashboarpathID
+ORDER BY r.rolID ASC, rdp.roldashboardpathID ASC;
